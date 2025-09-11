@@ -65,7 +65,6 @@ def show_folder_contents(current_path: Path):
     except Exception as e:
         st.error(f"❌ Ошибка при обходе `{current_path}`: {e}")
 
-
 if "current_path" not in st.session_state:
     roots = get_logical_drives() + list(get_special_dirs().values())
     for root in roots:
@@ -116,7 +115,6 @@ if st.session_state["queue"]:
     if st.button("🧹 Очистить очередь"):
         st.session_state["queue"] = []
 
-
 # --- Распределение по кластерам ---
 def distribute_to_folders(plan, base_dir: Path):
     moved, copied = 0, 0
@@ -141,19 +139,24 @@ def distribute_to_folders(plan, base_dir: Path):
             except Exception as e:
                 st.error(f"❌ Ошибка перемещения {src} → {dst}: {e}")
         else:
-            added = False
+            success_count = 0
+            total_targets = 0
             for cluster_id in clusters:
-                if cluster_id in cluster_dirs:
-                    dst = base_dir / f"cluster_{cluster_id}" / src.name
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.copy2(str(src), str(dst))
-                        copied += 1
-                        added = True
-                    except Exception as e:
-                        st.error(f"❌ Ошибка копирования {src} → {dst}: {e}")
-            if not added:
-                continue
+                dst = base_dir / f"cluster_{cluster_id}" / src.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                total_targets += 1
+                try:
+                    shutil.copy2(str(src), str(dst))
+                    copied += 1
+                    success_count += 1
+                except Exception as e:
+                    st.error(f"❌ Ошибка копирования {src} → {dst}: {e}")
+            if success_count == total_targets:
+                try:
+                    src.unlink()
+                    moved_paths.add(src.parent)
+                except Exception as e:
+                    st.warning(f"⚠️ Не удалось удалить оригинал {src}: {e}")
 
     for p in sorted(moved_paths, key=lambda x: len(str(x)), reverse=True):
         try:
@@ -181,7 +184,7 @@ if st.session_state["queue"] and st.button("🚀 Обработать всю о�
 
         moved, copied = distribute_to_folders(plan, path)
 
-        st.success(f"✅ Готово. Перемещено: {moved}, Скопировано: {copied}")
+        st.success(f"✅ Готово. Перемещено: {moved}, Скопировано и удалено оригиналов: {copied}")
 
         if plan.get("unreadable"):
             st.warning(f"📛 Нечитаемых файлов: {len(plan['unreadable'])}")
