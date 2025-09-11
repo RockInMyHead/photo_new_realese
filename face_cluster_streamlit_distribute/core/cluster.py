@@ -1,9 +1,11 @@
 import cv2
 import numpy as np
 from pathlib import Path
-from sklearn.cluster import DBSCAN
 from tqdm import tqdm
 from insightface.app import FaceAnalysis
+from hdbscan import HDBSCAN
+from io import StringIO
+import sys
 
 IMG_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
 
@@ -17,7 +19,7 @@ def is_image(p: Path) -> bool:
 
 def _win_long(path: Path) -> str:
     p = str(path.resolve())
-    return "\\?\" + p if not p.startswith("\\?\") else p
+    return "\\\\?\\" + p if not p.startswith("\\\\?\\") else p
 
 def imread_safe(path: Path):
     try:
@@ -28,7 +30,7 @@ def imread_safe(path: Path):
     except Exception:
         return None
 
-def build_plan(input_dir: Path, det_size=(1024, 1024), dbscan_eps=0.5, dbscan_min_samples=2):
+def build_plan(input_dir: Path, det_size=(1024, 1024), min_cluster_size=3):
     input_dir = Path(input_dir)
     all_images = [p for p in input_dir.rglob("*") if is_image(p)]
 
@@ -38,28 +40,46 @@ def build_plan(input_dir: Path, det_size=(1024, 1024), dbscan_eps=0.5, dbscan_mi
     embeddings = []
     owners = []
     unreadable = []
+    no_faces = []
 
-    for p in tqdm(all_images, desc="📷 Scanning"):
-        img = imread_safe(p)
-        if img is None:
-            unreadable.append(p)
-            continue
-        faces = app.get(img)
-        for f in faces:
-            if getattr(f, "normed_embedding", None) is None:
+    tqdm_output = StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = tqdm_output
+
+    try:
+        for p in tqdm(all_images, desc="📷 Scanning"):
+            img = imread_safe(p)
+            if img is None:
+                unreadable.append(p)
                 continue
-            embeddings.append(f.normed_embedding.astype(np.float32))
-            owners.append(p)
+
+            faces = app.get(img)
+            if not faces:
+                no_faces.append(p)
+                continue
+
+            for f in faces:
+                emb = getattr(f, "normed_embedding", None)
+                if emb is None:
+                    continue
+                vec = emb.astype(np.float32)
+                vec /= np.linalg.norm(vec)
+                embeddings.append(vec)
+                owners.append(p)
+    finally:
+        sys.stdout = old_stdout
 
     if not embeddings:
         return {
             "clusters": {},
             "plan": [],
             "unreadable": [str(p) for p in unreadable],
+            "no_faces": [str(p) for p in no_faces],
+            "tqdm_log": tqdm_output.getvalue(),
         }
 
     X = np.vstack(embeddings)
-    model = DBSCAN(eps=dbscan_eps, min_samples=dbscan_min_samples, metric="cosine")
+    model = HDBSCAN(min_cluster_size=min_cluster_size, metric="euclidean")
     labels = model.fit_predict(X)
 
     cluster_map = {}
@@ -75,7 +95,7 @@ def build_plan(input_dir: Path, det_size=(1024, 1024), dbscan_eps=0.5, dbscan_mi
         cluster_by_img.setdefault(path, set()).add(int(lbl))
 
     plan = []
-    for path in all_images:
+    for path in sorted(all_images, key=lambda x: str(x)):
         clusters = cluster_by_img.get(path)
         if not clusters:
             continue
@@ -85,7 +105,9 @@ def build_plan(input_dir: Path, det_size=(1024, 1024), dbscan_eps=0.5, dbscan_mi
         })
 
     return {
-        "clusters": {int(k): [str(p) for p in sorted(v)] for k, v in cluster_map.items()},
+        "clusters": {int(k): [str(p) for p in sorted(v, key=lambda x: str(x))] for k, v in cluster_map.items()},
         "plan": plan,
         "unreadable": [str(p) for p in unreadable],
+        "no_faces": [str(p) for p in no_faces],
+        "tqdm_log": tqdm_output.getvalue(),
     }
