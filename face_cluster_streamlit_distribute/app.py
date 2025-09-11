@@ -9,7 +9,6 @@ from core.cluster import build_plan, IMG_EXTS
 st.set_page_config("Кластеризация лиц", layout="wide")
 st.title("📸 Кластеризация лиц и распределение по папкам")
 
-# Очередь выбранных папок
 if "queue" not in st.session_state:
     st.session_state["queue"] = []
 
@@ -107,7 +106,6 @@ show_folder_contents(Path(st.session_state["current_path"]))
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# Показать очередь
 if st.session_state["queue"]:
     st.subheader("📋 Очередь на обработку:")
     for i, folder in enumerate(st.session_state["queue"]):
@@ -169,6 +167,8 @@ def distribute_to_folders(plan, base_dir: Path):
 
 # --- Обработка очереди ---
 if st.session_state["queue"] and st.button("🚀 Обработать всю очередь"):
+    cluster_offset = 1  # глобальный счётчик кластеров
+
     for folder in st.session_state["queue"]:
         path = Path(folder)
         st.markdown(f"### 📂 Обработка: `{path}`")
@@ -178,6 +178,21 @@ if st.session_state["queue"] and st.button("🚀 Обработать всю о�
 
         with st.spinner("🧠 Кластеризация..."):
             plan = build_plan(path)
+
+        # --- Перенумерация кластеров ---
+        old_to_new = {}
+        for i, cid in enumerate(sorted(plan.get("clusters", {}).keys()), start=cluster_offset):
+            old_to_new[int(cid)] = i
+
+        plan["clusters"] = {
+            old_to_new[int(k)]: v for k, v in plan.get("clusters", {}).items() if int(k) in old_to_new
+        }
+
+        for entry in plan.get("plan", []):
+            entry["cluster"] = [old_to_new[cid] for cid in entry.get("cluster", []) if cid in old_to_new]
+
+        cluster_count = len(old_to_new)
+        cluster_offset += cluster_count
 
         with open(f"plan_{path.name}.json", "w", encoding="utf-8") as f:
             json.dump(plan, f, ensure_ascii=False, indent=2)
